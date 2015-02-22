@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<style>
+
+canvas{
+	position:fixed;
+	left:0px;
+	top:0px;
+	width:100%;
+	height:100%;
+	
+	background:rgb(235,235,235);
+}
+
+</style>
+<html>
+<head>
+<meta charset="utf-8"/>
+
+<title>Device.js | Development</title>
+
+<meta content="yes" name="apple-mobile-web-app-capable" />
+<meta content="minimum-scale=1.0, width=device-width, maximum-scale=1, user-scalable=no" name="viewport"/>
+
+<link rel="stylesheet" href="/resources/css/resets.css"/>
+
+<script src='/resources/scripts/classie.js'></script>
+
+<script src='/resources/scripts/Post.js'></script>
+<script src='/resources/scripts/Device.js'></script>
+<script src='/_ah/channel/jsapi'></script>
+
+</head>
+<body>
+
+<canvas id='canvas'></canvas>
+
+<script type='text/javascript'>
+(function(){
+	
+	/*
+	
+	Device.register();// auto assign ID... use nick name
+	device.connect('120cch8934');
+	device.addEventListener('onmessage', OnReceive);
+	device.send(data);
+	device.device('120cch8934').send()
+	device.devices()
+	
+	*/
+	
+	window.addEventListener('load', Init);
+	
+	var canvas, ctx, width, height;
+	
+	// {source:{data:[], color:_____}}
+	var connections = {};
+	
+	function Init(){
+		LoadCanvas();
+		RegisterDevice();
+	}
+	
+	function RegisterDevice(){
+		Device.addEventListener('register', OnRegister);
+		Device.register();
+	}
+	
+	function OnRegister(event){
+		console.info('Device ID = "'+Device.identifier()+'"');
+		Device.addEventListener('message', OnMessage);
+		Device.addEventListener('verify', OnVerify);
+	}
+	
+	function RandomColor(){
+		return '#'+(Math.random()*0xFFFFFF<<0).toString(16);
+	}
+	function OnVerify(event){
+		connections[event.target.identifier()] = {data:[], color:RandomColor()};
+		UpdateCanvas();
+	}
+	
+	function OnMessage(event){
+		var source = event.source,
+				data = event.data,
+				method = event.method;
+		if(method == 'mobile.acceleration') ReadAcceleration(source, data.data);
+	}
+	function ReadAcceleration(source, points){
+		connections[source].data = points;
+		UpdateCanvas();
+	}
+	
+	function LoadCanvas(){
+		canvas = document.getElementById('canvas');
+		canvas.removeAttribute('id');
+		
+		ctx = canvas.getContext('2d');
+		
+		OnResize();
+		window.addEventListener('resize', OnResize);
+	}
+	function OnResize(){
+		width = canvas.width = canvas.offsetWidth;
+		height = canvas.height = canvas.offsetHeight;
+		UpdateCanvas();
+	}
+	function UpdateCanvas(){
+		ctx.clearRect(0,0,width,height);
+		
+		ctx.save();
+		ctx.translate(100, 100);
+		ctx.scale((width-200)/width, (height-200)/height);
+		
+		ctx.fillStyle = 'rgb(255,255,255)';
+		ctx.fillRect(0,0,width,height);
+		
+		ctx.restore();
+		
+		var y = 0;
+		
+		for(var source in connections){
+			var data = connections[source],
+					color = data.color;
+			ctx.fillStyle = color;
+			ctx.fillRect(10, y+10, 30, 30);
+			ctx.fillStyle = 'rgb(0,0,0)';
+			ctx.verticalAlign = 'middle';
+			ctx.textAlign = 'left';
+			ctx.fillText(source, 50, y+30);
+			y += 40;
+			
+			if(data.data.length > 0){
+				ctx.strokeStyle = color;
+				Graph(data.data);
+			}
+			
+			CheckMatches(source);
+		}
+	}
+	
+	function CheckMatches(source){
+		var data = ImportantPoints(connections[source].data);
+		
+		if(data.length == 0) return;
+		
+		for(var target in connections){
+			if(source == target || connections[target].data.length == 0) continue;
+			var target_data = ImportantPoints(connections[target].data);
+			
+			var offset_max = 200;
+			
+			for(var offset=-offset_max; offset<offset_max; offset+=5){
+				var avg_dist = 0;
+				for(var i=0; i<Math.min(data.length, target_data.length); i++){
+					var source_point = data[i],
+							target_point = target_data[i];
+					avg_dist += Math.sqrt(Math.pow(source_point.mag-target_point.mag,2) + Math.pow(offset+source_point.time-target_point.time,2));
+				}
+				avg_dist /= Math.min(data.length, target_data.length);
+				
+				if(avg_dist<3000){
+					console.log(avg_dist)
+					console.log('MATCH')
+					return;
+				}
+				
+			}
+		}
+		
+		console.log('no match')
+	}
+	
+	
+	
+	
+	
+	
+	const peak_threshhold = 0.07;
+	const frames_threshhold = 0.005;
+	
+	function MaxMin(list, getter){
+		if(typeof getter != 'function') getter = function(x){return x;};
+		var max = getter(list[0]), min = getter(list[0]);
+		for(var i=1; i<list.length; i++){
+			var value = getter(list[i]);
+			if(value < min) min = value;
+			if(value > max) max = value;
+		}
+		return {max:max, min:min};
+	}
+	function FindPeaks(data){
+		var peaks = [];
+		for(var i=0,point; point=data[i++];){
+			var lastpoint = data[i-2],
+					nextpoint = data[i];
+			if(!lastpoint || !nextpoint) continue;
+			
+			// max
+			if(lastpoint.mag <= point.mag && nextpoint.mag <= point.mag) peaks.push(point);
+			// min
+			if(lastpoint.mag >= point.mag && nextpoint.mag >= point.mag) peaks.push(point);
+		}
+		return peaks;
+	}
+	function FilterPeaks(data, threshhold){
+		var peaks = [];
+		for(var i=0; i<data.length; i++){
+			var peak = data[i];
+			var adjacents = [];
+			if(!!data[i-1]) adjacents.push(data[i-1]);
+			if(!!data[i+1]) adjacents.push(data[i+1]);
+			
+			var average_change = 0;
+			for(var k=0,adj; adj=adjacents[k++];){
+				average_change += Math.abs(peak.mag-adj.mag) / Math.abs(peak.time-adj.time);
+			}
+			average_change /= adjacents.length;
+			
+			// average_change is the change over time taken.
+			if(isNaN(average_change) || Math.abs(average_change) < threshhold) continue;
+			
+			peaks.push(peak);
+		}
+		return peaks;
+	}
+	function FrequencyFrames(data, threshhold){
+		var freqs = [];
+		for(var start=0; start<data.length; start++){
+			for(var end=start+1; end<data.length; end++){
+				var freq = (end-start) / (data[end].time - data[start].time);
+				if(freq > threshhold) freqs.push({start:start, end:end});
+			}
+		}
+		return freqs;
+	}
+	function LargestFrame(data){
+		var largest = data[0];
+		for(var i=0,frame; frame=data[i++];){
+			if(largest.end - largest.start < frame.end - frame.start) largest = frame;
+		}
+		return largest;
+	}
+	function ImportantPoints(data){
+		var peaks = FilterPeaks(FindPeaks(data), peak_threshhold),
+				freq_frames = FrequencyFrames(peaks, frames_threshhold),
+				range = LargestFrame(freq_frames);
+		return range == undefined ? [] : data.slice(range.start, range.end);
+	}
+	
+	function Graph(data){
+		var time_bound = MaxMin(data, function(x){return x.time;}),
+				mag_bound = MaxMin(data, function(x){return x.mag;});
+		
+		ctx.save();
+		ctx.translate(100, 100);
+		ctx.scale((width-200)/width, (height-200)/height);
+		
+		ctx.beginPath();
+		for(var i=0,point; point=data[i++];){
+			var funct = i == 1 ? ctx.moveTo : ctx.lineTo;
+			var x = (point.time - time_bound.min) / (time_bound.max - time_bound.min),
+					y = (point.mag - mag_bound.min) / (mag_bound.max - mag_bound.min);
+			funct.call(ctx, x*width, (1-y)*height);
+		}
+		ctx.stroke();
+		
+		// draw peaks
+		var peaks = FilterPeaks(FindPeaks(data), peak_threshhold),
+				freq_frames = FrequencyFrames(peaks, frames_threshhold),
+				range = LargestFrame(freq_frames);
+		
+		if(peaks.length > 1){
+			for(var i=range.start; i<range.end; i++){
+				var peak = peaks[i];
+				var x = (peak.time - time_bound.min) / (time_bound.max - time_bound.min),
+						y = (peak.mag - mag_bound.min) / (mag_bound.max - mag_bound.min);
+				ctx.fillStyle = 'rgb(0,0,200)';
+				ctx.fillRect(x*width-5, (1-y)*height-5, 10, 10);
+			}
+		}
+		
+		ctx.restore();
+		/*
+		ctx.fillStyle = 'rgb(0,0,0)';
+		ctx.textAlign = 'right';
+		
+		ctx.fillText(Math.round(mag_bound.max*1000)/1000, 90, 110);
+		ctx.fillText(Math.round(mag_bound.min*1000)/1000, 90, height-100);
+		
+		ctx.textAlign = 'left';
+		ctx.fillText(0, 100, height-80);
+		
+		ctx.textAlign = 'right';
+		ctx.fillText(time_bound.max-time_bound.min, width-100, height-80);
+		*/
+	}
+	
+})();
+</script>
+</body>
+</html>
